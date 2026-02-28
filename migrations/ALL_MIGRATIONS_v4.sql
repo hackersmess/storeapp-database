@@ -158,6 +158,10 @@ CREATE TABLE activities (
     end_date DATE NOT NULL,
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
+    -- IANA timezone IDs for notifications and cross-timezone calculations
+    -- For Events: both are the same (same location). For Trips: may differ (e.g. Rome → New York)
+    start_timezone VARCHAR(50) NOT NULL DEFAULT 'Europe/Rome',
+    end_timezone   VARCHAR(50) NOT NULL DEFAULT 'Europe/Rome',
     
     -- Discriminator for inheritance (EVENT or TRIP)
     activity_type VARCHAR(50) NOT NULL DEFAULT 'EVENT',
@@ -240,6 +244,7 @@ CREATE INDEX idx_activities_date_range ON activities(group_id, start_date, end_d
 CREATE INDEX idx_activities_type ON activities(activity_type);
 CREATE INDEX idx_activities_display_order ON activities(group_id, display_order);
 CREATE INDEX idx_activities_completed ON activities(group_id, is_completed);
+CREATE INDEX idx_activities_start_timezone ON activities(start_timezone);
 
 -- Indexes for EVENT-specific queries
 CREATE INDEX idx_activities_event_location ON activities(event_location_latitude, event_location_longitude) 
@@ -309,17 +314,24 @@ CREATE TABLE activity_expense_splits (
     group_member_id BIGINT NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
     is_paid BOOLEAN DEFAULT FALSE NOT NULL,
+    is_payer BOOLEAN DEFAULT FALSE NOT NULL,
+    paid_amount DECIMAL(10, 2) DEFAULT 0 NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
     
     CONSTRAINT fk_split_expense FOREIGN KEY (expense_id) REFERENCES activity_expenses(id) ON DELETE CASCADE,
     CONSTRAINT fk_split_member FOREIGN KEY (group_member_id) REFERENCES group_members(id) ON DELETE CASCADE,
     CONSTRAINT unique_expense_member UNIQUE (expense_id, group_member_id),
-    CONSTRAINT check_split_amount CHECK (amount >= 0)
+    CONSTRAINT check_split_amount CHECK (amount >= 0),
+    CONSTRAINT check_payer_amount CHECK (
+        (is_payer = FALSE AND paid_amount = 0) OR
+        (is_payer = TRUE AND paid_amount > 0)
+    )
 );
 
 CREATE INDEX idx_splits_expense ON activity_expense_splits(expense_id);
 CREATE INDEX idx_splits_member ON activity_expense_splits(group_member_id);
+CREATE INDEX idx_splits_payer ON activity_expense_splits(expense_id, is_payer) WHERE is_payer = TRUE;
 
 -- =====================================================
 -- V9: Create VIEWS for easier querying
@@ -373,3 +385,12 @@ GROUP BY a.id, a.group_id, a.name, a.description, a.start_time, a.end_time,
 -- =====================================================
 -- DATABASE SETUP COMPLETE
 -- =====================================================
+
+-- =====================================================
+-- V10: Performance index for expense settlement queries
+-- Accelera l'aggregazione bilanci: JOIN su group_member_id + expense_id
+-- =====================================================
+
+CREATE INDEX idx_expense_splits_member_expense
+    ON activity_expense_splits(group_member_id, expense_id);
+
